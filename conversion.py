@@ -13,9 +13,9 @@ import tiledb
 import typer
 from loguru import logger
 
-from core import ATTR_VALUE_NAME, DIM_COL_NAME, DIM_ROW_NAME
-from logging_config import setup_logging
-from models import DataType, ErrorCode, StreamMatConfig, StreamMatException
+from .core import ATTR_VALUE_NAME, DIM_COL_NAME, DIM_ROW_NAME
+from .logging_config import setup_logging
+from .models import DataType, ErrorCode, StreamMatConfig, StreamMatException
 
 # --- Type Definitions ---
 # A standardized internal representation for a chunk of sparse data

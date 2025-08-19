@@ -8,7 +8,7 @@ import numpy as np
 import tiledb
 from loguru import logger
 
-from models import DataType, ErrorCode, StreamMatConfig, StreamMatException
+from .models import DataType, ErrorCode, StreamMatConfig, StreamMatException
 
 # Constants for TileDB schema and metadata
 DIM_ROW_NAME = "dim_row"

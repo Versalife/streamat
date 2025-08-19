@@ -10,9 +10,9 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from loguru import logger
 
-from core import StreamMatrix
-from logging_config import setup_logging
-from models import (ErrorCode, ErrorDetail, ErrorResponse, LoadMatrixRequest,
+from .core import StreamMatrix
+from .logging_config import setup_logging
+from .models import (ErrorCode, ErrorDetail, ErrorResponse, LoadMatrixRequest,
                     MatrixInfo, ServerStatus, StreamMatException,
                     VectorRequest)
 
