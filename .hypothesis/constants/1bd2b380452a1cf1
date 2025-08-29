@@ -1,0 +1,4 @@
+# file: /Users/ojoseph/Desktop/streamat/streammat/core.py
+# hypothesis_version: 6.138.7
+
+[100, 1000, 4096, 'attr_value', 'dim_col', 'dim_row', 'r', 'w']

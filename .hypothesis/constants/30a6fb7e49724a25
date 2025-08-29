@@ -1,0 +1,4 @@
+# file: /Users/ojoseph/Desktop/streamat/streammat/config.py
+# hypothesis_version: 6.138.7
+
+[8000, '0.0.0.0']

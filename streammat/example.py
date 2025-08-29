@@ -11,11 +11,11 @@ from pathlib import Path
 from loguru import logger
 
 # Correct imports for package structure
-from core import StreamMatrix
-from logging_config import setup_logging
+from .core import StreamMatrix
+from .logging_config import setup_logging
 
 
-async def main():
+async def run_example():
     """Main async function to run the example."""
     setup_logging()
 
@@ -106,5 +106,8 @@ async def main():
     logger.success("Cleanup complete.")
 
 
+def main():
+    asyncio.run(run_example())
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

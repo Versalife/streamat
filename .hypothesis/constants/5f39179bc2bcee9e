@@ -1,0 +1,4 @@
+# file: /Users/ojoseph/Desktop/streamat/streammat/models.py
+# hypothesis_version: 6.138.7
+
+['DATA_TYPE_MISMATCH', 'DIMENSION_MISMATCH', 'INVALID_REQUEST', 'MATRIX_NOT_FOUND', 'METADATA_ERROR', 'MISSING_DEPENDENCY', 'TILEDB_ERROR', 'UNSUPPORTED_DATATYPE', 'UNSUPPORTED_FORMAT', 'float32', 'float64', 'int32', 'int64']

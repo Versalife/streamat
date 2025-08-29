@@ -12,15 +12,13 @@ from loguru import logger
 
 from .core import StreamMatrix
 from .logging_config import setup_logging
-from .models import (ErrorCode, ErrorDetail, ErrorResponse, LoadMatrixRequest,
+from .config import settings
+from .models import (ErrorCode, ErrorDetail, ErrorResponse, LoadMatrixRequest, MatMulRequest,
                     MatrixInfo, ServerStatus, StreamMatException,
                     VectorRequest)
 
 # Global state for the server
-server_state: Dict[str, any] = {
-    "loaded_matrices": {},
-    "lock": RWLock(),  # Reader-Writer lock for concurrent access to the matrices dict
-}
+server_state: Dict[str, any] = {}
 
 
 @asynccontextmanager
@@ -28,6 +26,8 @@ async def lifespan(app: FastAPI):
     # Code to run on server startup
     setup_logging()
     logger.info("StreamMat server is starting up...")
+    server_state["loaded_matrices"] = {}
+    server_state["lock"] = RWLock()
     yield
     # Code to run on server shutdown
     logger.info("StreamMat server is shutting down...")
@@ -112,6 +112,24 @@ async def load_matrix(matrix_name: str, request: LoadMatrixRequest):
     return {"message": f"Matrix '{matrix_name}' loaded successfully from '{request.uri}'."}
 
 
+@app.delete(
+    "/api/v1/matrix/{matrix_name}",
+    status_code=status.HTTP_200_OK,
+    summary="Unload a Matrix"
+)
+async def unload_matrix(matrix_name: str):
+    """
+    Unloads a matrix from the server, freeing up resources.
+    """
+    logger.info(f"Request to unload matrix '{matrix_name}'.")
+    async with server_state["lock"].writer_lock:
+        if matrix_name not in server_state["loaded_matrices"]:
+            raise StreamMatException(ErrorCode.MATRIX_NOT_FOUND, f"Matrix '{matrix_name}' not found.")
+        del server_state["loaded_matrices"][matrix_name]
+    logger.success(f"Successfully unloaded matrix '{matrix_name}'.")
+    return {"message": f"Matrix '{matrix_name}' unloaded successfully."}
+
+
 async def _load_matrix_into_state(matrix_name: str, uri: str):
     """Helper function to load a matrix and place it into the server state."""
     import tiledb
@@ -140,7 +158,7 @@ async def perform_matvec(matrix_name: str, request: VectorRequest):
             raise StreamMatException(ErrorCode.MATRIX_NOT_FOUND, f"Matrix '{matrix_name}' not found.")
         matrix = server_state["loaded_matrices"][matrix_name]
 
-    input_vector = np.array(request.vector, dtype=np.float64)
+    input_vector = np.array(request.vector, dtype=matrix._numpy_dtype)
     result_vector = await matrix.matvec(input_vector)
 
     return {"result": result_vector.tolist()}
@@ -158,7 +176,35 @@ async def perform_rmatvec(matrix_name: str, request: VectorRequest):
             raise StreamMatException(ErrorCode.MATRIX_NOT_FOUND, f"Matrix '{matrix_name}' not found.")
         matrix = server_state["loaded_matrices"][matrix_name]
 
-    input_vector = np.array(request.vector, dtype=np.float64)
+    input_vector = np.array(request.vector, dtype=matrix._numpy_dtype)
     result_vector = await matrix.rmatvec(input_vector)
 
     return {"result": result_vector.tolist()}
+
+
+@app.post(
+    "/api/v1/matmul/{matrix_a_name}/{matrix_b_name}",
+    status_code=status.HTTP_200_OK,
+    summary="Matrix-Matrix Multiplication"
+)
+async def perform_matmul(matrix_a_name: str, matrix_b_name: str, request: MatMulRequest):
+    """
+    Performs matrix-matrix multiplication (C = A * B).
+    """
+    logger.info(f"Received matmul request for {matrix_a_name} * {matrix_b_name} -> {request.output_uri}")
+    async with server_state["lock"].reader_lock:
+        if matrix_a_name not in server_state["loaded_matrices"]:
+            raise StreamMatException(ErrorCode.MATRIX_NOT_FOUND, f"Matrix '{matrix_a_name}' not found.")
+        if matrix_b_name not in server_state["loaded_matrices"]:
+            raise StreamMatException(ErrorCode.MATRIX_NOT_FOUND, f"Matrix '{matrix_b_name}' not found.")
+        
+        matrix_a = server_state["loaded_matrices"][matrix_a_name]
+        matrix_b = server_state["loaded_matrices"][matrix_b_name]
+
+    await matrix_a.matmul(matrix_b, request.output_uri)
+
+    return {"message": f"Matrix multiplication complete. Result stored at '{request.output_uri}'."}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host=settings.host, port=settings.port)

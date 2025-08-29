@@ -12,6 +12,7 @@ import numpy as np
 import tiledb
 import typer
 from loguru import logger
+from scipy.sparse import coo_matrix
 
 from .core import ATTR_VALUE_NAME, DIM_COL_NAME, DIM_ROW_NAME
 from .logging_config import setup_logging
@@ -184,6 +185,43 @@ def _create_and_write_tiledb(
             A.meta[field] = value.value if isinstance(value, enum.Enum) else value
 
 
+def convert_coo_to_tiledb(
+    coo_mat: coo_matrix,
+    tiledb_uri: str,
+    target_dtype: DataType,
+    overwrite: bool = False,
+    ctx: tiledb.Ctx = None,
+):
+    """Converts a SciPy COO matrix to a StreamMat-compatible TileDB array."""
+    if Path(tiledb_uri).exists():
+        if overwrite:
+            logger.warning(f"Output URI '{tiledb_uri}' exists. Overwriting as requested.")
+            shutil.rmtree(tiledb_uri)
+        else:
+            raise StreamMatException(
+                ErrorCode.INVALID_REQUEST,
+                f"Output URI '{tiledb_uri}' already exists. Use overwrite=True to replace it."
+            )
+
+    ctx = ctx or tiledb.Ctx()
+    numpy_dtype = np.float64 if target_dtype == DataType.FLOAT64 else np.float32
+    rows, cols = coo_mat.shape
+    nnz = coo_mat.nnz
+
+    def coo_generator():
+        yield rows, cols, nnz
+        data = np.empty(
+            nnz,
+            dtype=[('row', np.uint64), ('col', np.uint64), ('val', numpy_dtype)]
+        )
+        data['row'] = coo_mat.row
+        data['col'] = coo_mat.col
+        data['val'] = coo_mat.data.astype(numpy_dtype)
+        yield data
+
+    _create_and_write_tiledb(tiledb_uri, target_dtype, coo_generator(), ctx)
+
+
 # --- Main CLI Function ---
 
 @cli_app.command()
@@ -277,5 +315,5 @@ def convert(
         raise typer.Exit(code=1)
 
 
-if __name__ == "__main__":
-    cli_app()
+
+

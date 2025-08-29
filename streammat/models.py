@@ -68,6 +68,11 @@ class LoadMatrixRequest(BaseModel):
     uri: str = Field(..., description="The URI of the TileDB array to load (e.g., path or tiledb://namespace/array)")
 
 
+class MatMulRequest(BaseModel):
+    """Data model for the POST /matmul/{matrix_a_name}/{matrix_b_name} API request."""
+    output_uri: str = Field(..., description="The URI for the output TileDB array to be created.")
+
+
 class ErrorDetail(BaseModel):
     """Detailed error model for API error responses."""
     code: ErrorCode
