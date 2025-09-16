@@ -64,20 +64,26 @@ def setup_and_teardown_tiledb():
         shutil.rmtree(TEST_MATRIX_FLOAT32_URI)
 
 def test_load_matrix(client):
-    response = client.put(
-        "/api/v1/matrix/test_matrix",
+    matrix_name = "test_matrix_load"
+    with client.stream(
+        "PUT",
+        f"/api/v1/matrix/{matrix_name}",
         json={"uri": TEST_MATRIX_URI}
-    )
-    assert response.status_code == 201
-    assert response.json() == {"message": f"Matrix 'test_matrix' loaded successfully from '{TEST_MATRIX_URI}'."}
+    ) as response:
+        assert response.status_code == 200
+        # Consume the stream to ensure the loading is complete
+        for line in response.iter_lines():
+            print(line) # for debugging
+            if "loading_complete" in line:
+                break
 
     # Check status
     response = client.get("/api/v1/status")
     assert response.status_code == 200
     data = response.json()
     assert data["server_status"] == "running"
-    assert "test_matrix" in data["loaded_matrices"]
-    assert data["loaded_matrices"]["test_matrix"]["config"]["rows"] == 4
+    assert matrix_name in data["loaded_matrices"]
+    assert data["loaded_matrices"][matrix_name]["config"]["rows"] == 4
 
 def test_matvec_success(client):
     # Ensure matrix is loaded
@@ -135,22 +141,87 @@ def test_dimension_mismatch(client):
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "DIMENSION_MISMATCH"
 
+
+def test_status_endpoint_for_shape_discovery(client):
+    """Tests that the status endpoint includes operation shapes."""
+    client.put("/api/v1/matrix/test_matrix", json={"uri": TEST_MATRIX_URI})
+    response = client.get("/api/v1/status")
+    assert response.status_code == 200
+    data = response.json()
+    matrix_info = data["loaded_matrices"]["test_matrix"]
+
+    assert "operations" in matrix_info
+    ops = matrix_info["operations"]
+    assert "matvec" in ops
+    assert ops["matvec"]["input_shape"] == [4]
+    assert ops["matvec"]["output_shape"] == [4]
+    assert "rmatvec" in ops
+    assert ops["rmatvec"]["input_shape"] == [4]
+    assert ops["rmatvec"]["output_shape"] == [4]
+
+
+def test_matvec_with_sparse_vector(client):
+    """Tests matvec with a sparse vector input."""
+    client.put("/api/v1/matrix/test_matrix", json={"uri": TEST_MATRIX_URI})
+    sparse_vector = {
+        "indices": [0, 3],
+        "values": [1.0, 4.0]
+    } # Represents dense vector [1, 0, 0, 4]
+    response = client.post(
+        "/api/v1/matvec/test_matrix",
+        json={"vector": sparse_vector}
+    )
+    assert response.status_code == 200
+    result = response.json()["result"]
+    # Expected: A * x = [1.1*1 + 5.5*4, 0, 0, 4.4*4] = [23.1, 0, 0, 17.6]
+    np.testing.assert_allclose(result, [23.1, 0, 0, 17.6])
+
+
+def test_rmatvec_with_sparse_vector(client):
+    """Tests rmatvec with a sparse vector input."""
+    client.put("/api/v1/matrix/test_matrix", json={"uri": TEST_MATRIX_URI})
+    sparse_vector = {
+        "indices": [0, 2],
+        "values": [10.0, 30.0]
+    } # Represents dense vector [10, 0, 30, 0]
+    response = client.post(
+        "/api/v1/rmatvec/test_matrix",
+        json={"vector": sparse_vector}
+    )
+    assert response.status_code == 200
+    result = response.json()["result"]
+    # Expected: A.T * y = [1.1*10, 0, 3.3*30, 5.5*10] = [11.0, 0, 99.0, 55.0]
+    np.testing.assert_allclose(result, [11.0, 0, 99.0, 55.0])
+
+
 def test_unload_matrix(client):
-    # First, load a matrix
-    client.put("/api/v1/matrix/test_unload", json={"uri": TEST_MATRIX_URI})
+    matrix_name = "test_unload"
+    unload_uri = "test_unload_matrix_tiledb"
+    # Create a dedicated matrix for this test so we can safely delete it
+    create_test_tiledb_array(unload_uri, np.float64, DataType.FLOAT64)
+    assert os.path.exists(unload_uri)
+
+    # First, load the matrix
+    with client.stream("PUT", f"/api/v1/matrix/{matrix_name}", json={"uri": unload_uri}) as response:
+        for line in response.iter_lines():
+            if "loading_complete" in line:
+                break
     
     # Check that it's loaded
     response = client.get("/api/v1/status")
-    assert "test_unload" in response.json()["loaded_matrices"]
+    assert matrix_name in response.json()["loaded_matrices"]
 
     # Unload the matrix
-    response = client.delete("/api/v1/matrix/test_unload")
+    response = client.delete(f"/api/v1/matrix/{matrix_name}")
     assert response.status_code == 200
-    assert response.json() == {"message": "Matrix 'test_unload' unloaded successfully."}
+    assert "unloaded and its data" in response.json()["message"]
 
-    # Check that it's gone
+    # Check that it's gone from the server status
     response = client.get("/api/v1/status")
-    assert "test_unload" not in response.json()["loaded_matrices"]
+    assert matrix_name not in response.json()["loaded_matrices"]
+
+    # Crucially, check that the on-disk artifact is also deleted
+    assert not os.path.exists(unload_uri)
 
     # Test unloading a non-existent matrix
     response = client.delete("/api/v1/matrix/non_existent_matrix")

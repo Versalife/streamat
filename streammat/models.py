@@ -5,7 +5,7 @@ This ensures strong typing, validation, and clear data contracts, especially
 for API request and response bodies.
 """
 import enum
-from typing import Dict, List
+from typing import Dict, List, Union
 
 from pydantic import BaseModel, Field
 
@@ -32,6 +32,7 @@ class ErrorCode(str, enum.Enum):
     UNSUPPORTED_DATATYPE = "UNSUPPORTED_DATATYPE"
     MISSING_DEPENDENCY = "MISSING_DEPENDENCY"
     UNSUPPORTED_FORMAT = "UNSUPPORTED_FORMAT"
+    NETWORK_ERROR = "NETWORK_ERROR"
 
 
 class StreamMatConfig(BaseModel):
@@ -50,6 +51,13 @@ class MatrixInfo(BaseModel):
     """Data model describing a single loaded matrix for status responses."""
     uri: str
     config: StreamMatConfig
+    operations: Dict[str, 'OperationInfo']
+
+
+class OperationInfo(BaseModel):
+    """Describes the expected shapes for a matrix operation."""
+    input_shape: List[int]
+    output_shape: List[int]
 
 
 class ServerStatus(BaseModel):
@@ -58,9 +66,15 @@ class ServerStatus(BaseModel):
     loaded_matrices: Dict[str, MatrixInfo]
 
 
+class SparseVector(BaseModel):
+    """Represents a sparse vector using indices and values."""
+    indices: List[int]
+    values: List[float]
+
+
 class VectorRequest(BaseModel):
     """Data model for API requests requiring a vector (e.g., matvec)."""
-    vector: List[float]
+    vector: Union[List[float], SparseVector]
 
 
 class LoadMatrixRequest(BaseModel):

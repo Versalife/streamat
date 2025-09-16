@@ -11,8 +11,8 @@ from pathlib import Path
 from loguru import logger
 
 # Correct imports for package structure
-from .core import StreamMatrix
-from .logging_config import setup_logging
+from streammat.core import StreamMatrix
+from streammat.logging_config import setup_logging
 
 
 async def run_example():

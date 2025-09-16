@@ -149,6 +149,7 @@ def _create_and_write_tiledb(
     target_dtype: DataType,
     matrix_generator: StreamedMatrixGenerator,
     ctx: tiledb.Ctx,
+    progress_callback: callable = None,
 ):
     """Creates and writes data to a TileDB array from a generator."""
     numpy_dtype = np.float64 if target_dtype == DataType.FLOAT64 else np.float32
@@ -174,10 +175,15 @@ def _create_and_write_tiledb(
     tiledb.Array.create(tiledb_uri, schema, ctx=ctx)
 
     logger.info("Writing data to TileDB array...")
+    elements_written = 0
     with tiledb.open(tiledb_uri, 'w', ctx=ctx) as A:
         for i, data_chunk in enumerate(matrix_generator):
-            logger.debug(f"Writing chunk {i + 1} with {len(data_chunk)} entries...")
+            chunk_size = len(data_chunk)
+            logger.debug(f"Writing chunk {i + 1} with {chunk_size} entries...")
             A[data_chunk['row'], data_chunk['col']] = data_chunk['val']
+            elements_written += chunk_size
+            if progress_callback:
+                progress_callback(elements_written, nnz)
 
         logger.info("Writing metadata...")
         config = StreamMatConfig(rows=rows, cols=cols, nnz=nnz, dtype=target_dtype)
@@ -222,6 +228,57 @@ def convert_coo_to_tiledb(
     _create_and_write_tiledb(tiledb_uri, target_dtype, coo_generator(), ctx)
 
 
+# --- Core Conversion Logic ---
+
+def convert_to_tiledb(
+    input_path: Path,
+    output_uri: str,
+    matrix_format: MatrixFormat,
+    target_dtype: DataType,
+    overwrite: bool,
+    progress_callback: callable = None,
+):
+    """
+    Core logic to convert a sparse matrix file to a StreamMat-compatible TileDB array.
+    """
+    if Path(output_uri).exists():
+        if overwrite:
+            logger.warning(f"Output URI '{output_uri}' exists. Overwriting as requested.")
+            shutil.rmtree(output_uri)
+        else:
+            raise StreamMatException(
+                ErrorCode.INVALID_REQUEST,
+                f"Output URI '{output_uri}' already exists. Use --overwrite to replace it.",
+            )
+
+    try:
+        ctx = tiledb.Ctx()
+        numpy_dtype = np.float64 if target_dtype == DataType.FLOAT64 else np.float32
+
+        opener = gzip.open if input_path.suffix == ".gz" else open
+
+        with opener(input_path, "rt", encoding="utf-8") as f:
+            if matrix_format == MatrixFormat.MATRIX_MARKET:
+                generator = _read_matrix_market(f, numpy_dtype)
+            elif matrix_format == MatrixFormat.HARWELL_BOEING:
+                generator = _read_harwell_boeing(f, numpy_dtype)
+            elif matrix_format == MatrixFormat.GCT:
+                generator = _read_gct(f, numpy_dtype)
+            else:
+                raise StreamMatException(ErrorCode.UNSUPPORTED_FORMAT, f"Format '{matrix_format}' not implemented.")
+
+            _create_and_write_tiledb(output_uri, target_dtype, generator, ctx, progress_callback)
+
+        logger.success(f"Conversion complete. TileDB array created at '{output_uri}'.")
+
+    except StreamMatException as e:
+        logger.error(f"A StreamMat error occurred: {e.message} (Code: {e.code.value})")
+        raise
+    except Exception as e:
+        logger.exception("An unexpected error occurred during the conversion process.")
+        raise StreamMatException(ErrorCode.UNKNOWN_ERROR, str(e))
+
+
 # --- Main CLI Function ---
 
 @cli_app.command()
@@ -262,51 +319,25 @@ def convert(
     """
     setup_logging()
 
-    if matrix_format is None:
+    inferred_format = matrix_format
+    if inferred_format is None:
         suffix = input_path.suffix
         if suffix == ".gz":
             suffix = input_path.with_suffix("").suffix  # Check extension before .gz
 
         if suffix in [".mtx", ".mm"]:
-            matrix_format = MatrixFormat.MATRIX_MARKET
+            inferred_format = MatrixFormat.MATRIX_MARKET
         elif suffix in [".hb", ".rua"]:
-            matrix_format = MatrixFormat.HARWELL_BOEING
+            inferred_format = MatrixFormat.HARWELL_BOEING
         elif suffix == ".gct":
-            matrix_format = MatrixFormat.GCT
+            inferred_format = MatrixFormat.GCT
         else:
             logger.error(f"Could not infer format from file extension '{suffix}'. Please specify with --format.")
             raise typer.Exit(code=1)
-        logger.info(f"Inferred input format as: {matrix_format.value}")
-
-    if Path(output_uri).exists():
-        if overwrite:
-            logger.warning(f"Output URI '{output_uri}' exists. Overwriting as requested.")
-            shutil.rmtree(output_uri)
-        else:
-            logger.error(f"Output URI '{output_uri}' already exists. Use --overwrite to replace it.")
-            raise typer.Exit(code=1)
+        logger.info(f"Inferred input format as: {inferred_format.value}")
 
     try:
-        ctx = tiledb.Ctx()
-        numpy_dtype = np.float64 if target_dtype == DataType.FLOAT64 else np.float32
-
-        opener = gzip.open if input_path.suffix == ".gz" else open
-
-        with opener(input_path, "rt", encoding="utf-8") as f:
-            if matrix_format == MatrixFormat.MATRIX_MARKET:
-                generator = _read_matrix_market(f, numpy_dtype)
-            elif matrix_format == MatrixFormat.HARWELL_BOEING:
-                generator = _read_harwell_boeing(f, numpy_dtype)
-            elif matrix_format == MatrixFormat.GCT:
-                generator = _read_gct(f, numpy_dtype)
-            else:
-                # This case should not be reachable due to earlier checks
-                raise StreamMatException(ErrorCode.UNSUPPORTED_FORMAT, f"Format '{matrix_format}' not implemented.")
-
-            _create_and_write_tiledb(output_uri, target_dtype, generator, ctx)
-
-        logger.success(f"Conversion complete. TileDB array created at '{output_uri}'.")
-
+        convert_to_tiledb(input_path, output_uri, inferred_format, target_dtype, overwrite)
     except StreamMatException as e:
         logger.error(f"A StreamMat error occurred: {e.message} (Code: {e.code.value})")
         raise typer.Exit(code=1)

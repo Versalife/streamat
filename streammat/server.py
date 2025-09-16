@@ -1,21 +1,25 @@
 """
 The FastAPI web server providing a RESTful API for StreamMat operations.
 """
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Dict
 
 import numpy as np
 from aiorwlock import RWLock
 from fastapi import FastAPI, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 
 from .core import StreamMatrix
+from .data_manager import DataManager
 from .logging_config import setup_logging
 from .config import settings
-from .models import (ErrorCode, ErrorDetail, ErrorResponse, LoadMatrixRequest, MatMulRequest,
-                    MatrixInfo, ServerStatus, StreamMatException,
-                    VectorRequest)
+from .models import (
+    ErrorCode, ErrorDetail, ErrorResponse, LoadMatrixRequest, MatMulRequest,
+    MatrixInfo, OperationInfo, ServerStatus, SparseVector, StreamMatException,
+    VectorRequest
+)
 
 # Global state for the server
 server_state: Dict[str, any] = {}
@@ -28,6 +32,7 @@ async def lifespan(app: FastAPI):
     logger.info("StreamMat server is starting up...")
     server_state["loaded_matrices"] = {}
     server_state["lock"] = RWLock()
+    server_state["data_manager"] = DataManager()
     yield
     # Code to run on server shutdown
     logger.info("StreamMat server is shutting down...")
@@ -86,10 +91,22 @@ async def get_status():
     """Returns the current status of the server and details of all loaded matrices."""
     logger.info("Status endpoint requested.")
     async with server_state["lock"].reader_lock:
-        matrices_info = {
-            name: MatrixInfo(uri=matrix.uri, config=matrix.config)
-            for name, matrix in server_state["loaded_matrices"].items()
-        }
+        matrices_info = {}
+        for name, matrix in server_state["loaded_matrices"].items():
+            matrices_info[name] = MatrixInfo(
+                uri=matrix.uri,
+                config=matrix.config,
+                operations={
+                    "matvec": OperationInfo(
+                        input_shape=[matrix.config.cols],
+                        output_shape=[matrix.config.rows],
+                    ),
+                    "rmatvec": OperationInfo(
+                        input_shape=[matrix.config.rows],
+                        output_shape=[matrix.config.cols],
+                    ),
+                },
+            )
     return ServerStatus(
         server_status="running",
         loaded_matrices=matrices_info
@@ -98,18 +115,47 @@ async def get_status():
 
 @app.put(
     "/api/v1/matrix/{matrix_name}",
-    status_code=status.HTTP_201_CREATED,
-    summary="Load or Replace a Matrix"
+    summary="Load or Replace a Matrix with Progress Stream"
 )
 async def load_matrix(matrix_name: str, request: LoadMatrixRequest):
     """
-    Loads a new matrix from a TileDB array URI or replaces an existing one.
-    This is a write operation and requires an exclusive lock.
+    Loads a new matrix, streaming progress updates.
+    If the URI is not a TileDB array, it will be downloaded and/or converted automatically.
     """
     logger.info(f"Request to load matrix '{matrix_name}' from URI '{request.uri}'.")
-    await _load_matrix_into_state(matrix_name, request.uri)
-    logger.success(f"Successfully loaded matrix '{matrix_name}'.")
-    return {"message": f"Matrix '{matrix_name}' loaded successfully from '{request.uri}'."}
+    data_manager = server_state["data_manager"]
+    
+    async def stream_progress():
+        queue = asyncio.Queue()
+
+        async def progress_callback(message: str):
+            await queue.put(message)
+
+        async def provision_and_load():
+            final_uri = None
+            try:
+                final_uri = await data_manager.provision_matrix(request.uri, matrix_name, progress_callback)
+                await _load_matrix_into_state(matrix_name, final_uri)
+                await progress_callback(f'{{"status": "loading_complete", "uri": "{final_uri}"}}')
+            except Exception as e:
+                error_msg = f"Failed to provision or load matrix: {e}"
+                logger.error(error_msg)
+                await progress_callback(f'{{"status": "error", "message": "{error_msg}"}}')
+            finally:
+                await progress_callback("END_OF_STREAM")
+
+        # Start the provisioning and loading process in the background
+        asyncio.create_task(provision_and_load())
+
+        # Yield messages from the queue until the end signal is received
+        while True:
+            message = await queue.get()
+            if message == "END_OF_STREAM":
+                break
+            yield f"data: {message}\n\n"
+
+    return StreamingResponse(stream_progress(), media_type="text/event-stream")
+
 
 
 @app.delete(
@@ -119,15 +165,35 @@ async def load_matrix(matrix_name: str, request: LoadMatrixRequest):
 )
 async def unload_matrix(matrix_name: str):
     """
-    Unloads a matrix from the server, freeing up resources.
+    Unloads a matrix from the server and deletes its TileDB array from disk.
     """
-    logger.info(f"Request to unload matrix '{matrix_name}'.")
+    import tiledb
+    logger.info(f"Request to unload and delete matrix '{matrix_name}'.")
+    
     async with server_state["lock"].writer_lock:
         if matrix_name not in server_state["loaded_matrices"]:
             raise StreamMatException(ErrorCode.MATRIX_NOT_FOUND, f"Matrix '{matrix_name}' not found.")
+        
+        matrix_to_delete = server_state["loaded_matrices"][matrix_name]
+        uri_to_delete = matrix_to_delete.uri
+        
         del server_state["loaded_matrices"][matrix_name]
-    logger.success(f"Successfully unloaded matrix '{matrix_name}'.")
-    return {"message": f"Matrix '{matrix_name}' unloaded successfully."}
+        logger.success(f"Successfully unloaded matrix '{matrix_name}' from server memory.")
+
+    try:
+        tiledb.remove(uri_to_delete)
+        logger.success(f"Successfully deleted TileDB array at '{uri_to_delete}'.")
+        return {"message": f"Matrix '{matrix_name}' unloaded and its data at '{uri_to_delete}' deleted."}
+    except Exception as e:
+        logger.error(f"Failed to delete TileDB array at '{uri_to_delete}': {e}")
+        # We still return a success because the primary goal (unloading from memory) was achieved.
+        # The error is logged for the operator to handle.
+        return JSONResponse(
+            status_code=status.HTTP_207_MULTI_STATUS,
+            content={
+                "message": f"Matrix '{matrix_name}' unloaded from memory, but failed to delete the on-disk array at '{uri_to_delete}'. Please check server logs.",
+            }
+        )
 
 
 async def _load_matrix_into_state(matrix_name: str, uri: str):
@@ -146,6 +212,26 @@ async def _load_matrix_into_state(matrix_name: str, uri: str):
         raise StreamMatException(ErrorCode.INTERNAL_SERVER_ERROR, str(e)) from e
 
 
+def _prepare_input_vector(vector_request: VectorRequest, expected_dim: int, dtype: np.dtype) -> np.ndarray:
+    """Prepares a numpy array from a dense or sparse vector request."""
+    if isinstance(vector_request.vector, SparseVector):
+        if not vector_request.vector.indices or not vector_request.vector.values:
+             raise StreamMatException(ErrorCode.INVALID_REQUEST, "Sparse vector must have both indices and values.")
+        if len(vector_request.vector.indices) != len(vector_request.vector.values):
+            raise StreamMatException(ErrorCode.INVALID_REQUEST, "Sparse vector indices and values must have the same length.")
+        
+        input_vector = np.zeros(expected_dim, dtype=dtype)
+        # Ensure indices are within bounds
+        max_index = max(vector_request.vector.indices)
+        if max_index >= expected_dim:
+            raise StreamMatException(ErrorCode.DIMENSION_MISMATCH, f"Index {max_index} in sparse vector is out of bounds for dimension {expected_dim}.")
+
+        input_vector[vector_request.vector.indices] = vector_request.vector.values
+        return input_vector
+    else:
+        return np.array(vector_request.vector, dtype=dtype)
+
+
 @app.post(
     "/api/v1/matvec/{matrix_name}",
     summary="Matrix-Vector Multiplication"
@@ -158,7 +244,7 @@ async def perform_matvec(matrix_name: str, request: VectorRequest):
             raise StreamMatException(ErrorCode.MATRIX_NOT_FOUND, f"Matrix '{matrix_name}' not found.")
         matrix = server_state["loaded_matrices"][matrix_name]
 
-    input_vector = np.array(request.vector, dtype=matrix._numpy_dtype)
+    input_vector = _prepare_input_vector(request, matrix.config.cols, matrix._numpy_dtype)
     result_vector = await matrix.matvec(input_vector)
 
     return {"result": result_vector.tolist()}
@@ -176,7 +262,7 @@ async def perform_rmatvec(matrix_name: str, request: VectorRequest):
             raise StreamMatException(ErrorCode.MATRIX_NOT_FOUND, f"Matrix '{matrix_name}' not found.")
         matrix = server_state["loaded_matrices"][matrix_name]
 
-    input_vector = np.array(request.vector, dtype=matrix._numpy_dtype)
+    input_vector = _prepare_input_vector(request, matrix.config.rows, matrix._numpy_dtype)
     result_vector = await matrix.rmatvec(input_vector)
 
     return {"result": result_vector.tolist()}

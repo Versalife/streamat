@@ -86,3 +86,30 @@ This phase introduces significant new capabilities to the library.
 -   **Additional Linear Algebra Operations**: Element-wise operations, scalar multiplication, matrix transpose, etc.
 -   **API Authentication**: Add a simple API key mechanism for security.
 -   **Improved Logging**: Allow configurable log levels and formats.
+
+## Phase 5: User-Requested Enhancements (Sept 2025)
+
+This phase addresses a set of user-requested features to improve usability, resource management, and API ergonomics.
+
+### 5.1. Unload with Deletion
+- **Action**: Modify the `DELETE /api/v1/matrix/{matrix_name}` endpoint in `server.py`.
+- **Functionality**: When a matrix is unloaded, its underlying TileDB array will be deleted from disk.
+- **Reasoning**: To ensure that "unloading" a matrix actually frees up disk space, making resource management more intuitive.
+
+### 5.2. Progress Communication for Matrix Loading
+- **Action**: Explore and implement a progress communication mechanism for the `PUT /api/v1/matrix/{matrix_name}` endpoint.
+- **Functionality**: The server will send status updates to the client during long-running matrix load/conversion operations.
+- **Implementation**:
+    - **Option 1**: Use `fastapi.responses.StreamingResponse`.
+    - **Option 2**: Implement a WebSocket-based notification system if streaming is insufficient.
+- **Reasoning**: To improve the user experience by providing feedback on slow operations, preventing timeouts and uncertainty.
+
+### 5.3. API for Shape Discovery
+- **Action**: Enhance the `MatrixInfo` model and the `/api/v1/status` endpoint.
+- **Functionality**: The API will expose the expected input and output shapes for vector operations (`matvec`, `rmatvec`).
+- **Reasoning**: To make the API more discoverable and prevent users from having to trigger a dimension mismatch error to find out the expected vector size.
+
+### 5.4. Ergonomic API for Sparse Data
+- **Action**: Redesign API models (`VectorRequest`) and core logic to handle sparse data formats.
+- **Functionality**: Allow users to pass sparse vectors (e.g., as a dictionary of indices and values) instead of dense arrays.
+- **Reasoning**: To make the API more ergonomic and efficient, especially for users working with very large, sparse vectors where listing all the zeros is impractical.

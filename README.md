@@ -1,5 +1,8 @@
 # StreamMat: A High-Performance Sparse Matrix Operations Library
 
+[![CI](https://github.com/Versalife/streamat/actions/workflows/ci.yml/badge.svg)](https://github.com/Versalife/streamat/actions/workflows/ci.yml)
+[![Python Version](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+
 StreamMat is a Python library designed for high-performance, out-of-core sparse matrix operations. It uses TileDB as its storage backend to efficiently handle matrices that are too large to fit into memory. The library provides a FastAPI-based web server to expose matrix operations as a RESTful API.
 
 ## Key Features
@@ -8,7 +11,7 @@ StreamMat is a Python library designed for high-performance, out-of-core sparse 
 - **High Performance**: Asynchronous, chunked operations to maximize throughput.
 - **TileDB Backend**: Leverages the power of the TileDB array database for efficient sparse data storage and retrieval.
 - **RESTful API**: Easy-to-use API for loading matrices, performing vector multiplications, and more.
-- **Data Conversion**: A command-line tool to convert matrices from Matrix Market format to the StreamMat TileDB format.
+- **On-the-Fly Data Conversion**: Automatically converts matrices from popular formats (like Matrix Market) and downloads from URLs.
 
 ## Installation
 
@@ -24,7 +27,7 @@ pip install streammat
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/your-username/streamat.git
+    git clone https://github.com/Versalife/streamat.git
     cd streamat
     ```
 
@@ -36,28 +39,15 @@ pip install streammat
 
 ## Usage
 
-### 1. Converting a Matrix
+### 1. Converting a Matrix (Optional)
 
-StreamMat uses a specialized TileDB format. You can convert a standard Matrix Market (`.mtx`) file to this format using the `streammat-convert` CLI tool.
+StreamMat can automatically convert matrices on the fly. However, you can still pre-convert a standard Matrix Market (`.mtx`) file to the TileDB format using the `streammat-convert` CLI tool.
 
 ```bash
 streammat-convert <input_mm_file.mtx> <output_tiledb_uri> [--dtype <data_type>] [--overwrite]
 ```
 
--   `<input_mm_file.mtx>`: Path to the input Matrix Market file.
--   `<output_tiledb_uri>`: The URI (local path) for the new TileDB array.
--   `--dtype`: The data type for the matrix values (e.g., `float32`, `float64`). Defaults to `float64`.
--   `--overwrite`: If specified, overwrite the output URI if it already exists.
-
-**Example:**
-
-```bash
-streammat-convert example_matrix.mtx my_matrix_tiledb --dtype float32 --overwrite
-```
-
 ### 2. Starting the Server
-
-Once you have your matrix in the TileDB format, you can start the StreamMat server:
 
 ```bash
 streammat-server
@@ -73,76 +63,60 @@ Here are some `curl` examples for interacting with the API:
 
 #### Load a Matrix
 
-This endpoint loads a TileDB matrix into the server's memory.
+This endpoint loads a matrix into the server's memory. It can be a path to a local TileDB array, a local file that needs conversion (e.g., `.mtx`), or a URL to a file.
+
+The endpoint returns a stream of server-sent events to track progress.
 
 ```bash
-curl -X PUT "http://127.0.0.1:8000/api/v1/matrix/my_matrix" \
+# Load from a local TileDB array (or a file that needs conversion)
+curl -N -X PUT "http://127.0.0.1:8000/api/v1/matrix/my_matrix" \
 -H "Content-Type: application/json" \
--d 
-{
+-d '{
   "uri": "my_matrix_tiledb"
-}
+}'
+
+# Example Output Stream:
+# data: {"status": "converting", "progress": 50.00}
+# data: {"status": "converting", "progress": 100.00}
+# data: {"status": "loading_complete", "uri": "/path/to/cache/....tiledb"}
 ```
 
-#### Get Server Status
+#### Get Server Status & Shape Discovery
 
-Check the server status and see which matrices are loaded.
+Check the server status, see which matrices are loaded, and discover the expected shapes for operations.
 
 ```bash
 curl -X GET "http://127.0.0.1:8000/api/v1/status"
 ```
 
+The response will include an `operations` field for each matrix, detailing the `input_shape` and `output_shape` for `matvec` and `rmatvec`.
+
 #### Perform Matrix-Vector Multiplication (matvec)
 
-Calculates `y = A * x`.
+Calculates `y = A * x`. You can provide the vector as a dense list or a sparse object.
 
 ```bash
+# Dense vector
 curl -X POST "http://127.0.0.1:8000/api/v1/matvec/my_matrix" \
 -H "Content-Type: application/json" \
--d 
-{
+-d '{
   "vector": [1, 2, 3, 4]
-}
-```
+}'
 
-#### Perform Adjoint Matrix-Vector Multiplication (rmatvec)
-
-Calculates `y = A.T * x`.
-
-```bash
-curl -X POST "http://127.0.0.1:8000/api/v1/rmatvec/my_matrix" \
+# Sparse vector (equivalent to [1, 0, 0, 4])
+curl -X POST "http://127.0.0.1:8000/api/v1/matvec/my_matrix" \
 -H "Content-Type: application/json" \
--d 
-{
-  "vector": [10, 20, 30, 40]
-}
-```
-
-#### Perform Matrix-Matrix Multiplication (matmul)
-
-Calculates `C = A * B` and saves the result to a new TileDB array.
-
-```bash
-# First, load a second matrix
-curl -X PUT "http://127.0.0.1:8000/api/v1/matrix/another_matrix" \
--H "Content-Type: application/json" \
--d 
-{
-  "uri": "my_matrix_tiledb"
-}
-
-# Then, perform the multiplication
-curl -X POST "http://127.0.0.1:8000/api/v1/matmul/my_matrix/another_matrix" \
--H "Content-Type: application/json" \
--d 
-{
-  "output_uri": "result_matrix_tiledb"
-}
+-d '{
+  "vector": {
+    "indices": [0, 3],
+    "values": [1.0, 4.0]
+  }
+}'
 ```
 
 #### Unload a Matrix
 
-Remove a matrix from the server to free up resources.
+Remove a matrix from the server and **delete its data from the disk cache**.
 
 ```bash
 curl -X DELETE "http://127.0.0.1:8000/api/v1/matrix/my_matrix"
@@ -152,16 +126,16 @@ curl -X DELETE "http://127.0.0.1:8000/api/v1/matrix/my_matrix"
 
 1.  **Clone the repository to run the example:**
     ```bash
-    git clone https://github.com/your-username/streamat.git
+    git clone https://github.com/Versalife/streamat.git
     cd streamat
     ```
 
 2.  **Install the development dependencies:**
     ```bash
-    pip install .[dev]
+    uv pip install --system '.[dev]'
     ```
 
 3.  **Run the example script:**
     ```bash
-    python streammat/example.py
+    python streamat/example.py
     ```
