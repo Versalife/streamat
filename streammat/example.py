@@ -1,13 +1,15 @@
 """
 Demonstrates how to use the StreamMat library after converting data via the CLI.
 """
+
 import asyncio
-import numpy as np
-import tiledb
 import os
 import shutil
 import subprocess
 from pathlib import Path
+
+import numpy as np
+import tiledb
 from loguru import logger
 
 # Correct imports for package structure
@@ -15,7 +17,7 @@ from streammat.core import StreamMatrix
 from streammat.logging_config import setup_logging
 
 
-async def run_example():
+async def run_example() -> None:
     """Main async function to run the example."""
     setup_logging()
 
@@ -51,8 +53,9 @@ async def run_example():
         "streammat-convert",
         str(mm_filepath),
         tiledb_array_uri,
-        "--dtype", "float64",
-        "--overwrite"  # Safe to use since we just cleaned it up
+        "--dtype",
+        "float64",
+        "--overwrite",  # Safe to use since we just cleaned it up
     ]
     logger.info(f"Running command: {' '.join(cli_command)}")
 
@@ -106,8 +109,9 @@ async def run_example():
     logger.success("Cleanup complete.")
 
 
-def main():
+def main() -> None:
     asyncio.run(run_example())
+
 
 if __name__ == "__main__":
     main()

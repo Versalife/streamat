@@ -1,39 +1,10 @@
-
 import asyncio
-import hashlib
-import os
-import tempfile
-from pathlib import Path
-from urllib.parse import urlparse
-
-import aiohttp
-import tiledb
-from loguru import logger
-
-from .config import settings
-from .conversion import MatrixFormat, convert_to_tiledb
-from .models import DataType, StreamMatException, ErrorCode
-
-
-class DataManager:
-    """
-    Manages the lifecycle of matrix data, including downloading, conversion,
-    and caching.
-    """
-
-    def __init__(self, temp_dir: str = None, cache_dir: str = None):
-        self.temp_dir = Path(temp_dir or tempfile.gettempdir())
-        self.cache_dir = Path(cache_dir or settings.streammat_cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self._provision_locks = {}
-
-    import asyncio
 import functools
 import hashlib
 import os
 import tempfile
+from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import Callable, Coroutine
 from urllib.parse import urlparse
 
 import aiohttp
@@ -51,14 +22,19 @@ class DataManager:
     and caching.
     """
 
-    def __init__(self, temp_dir: str = None, cache_dir: str = None):
-        self.temp_dir = Path(temp_dir or tempfile.gettempdir())
-        self.cache_dir = Path(cache_dir or settings.streammat_cache_dir)
+    def __init__(
+        self, temp_dir: str | None = None, cache_dir: str | None = None
+    ) -> None:
+        self.temp_dir: Path = Path(temp_dir or tempfile.gettempdir())
+        self.cache_dir: Path = Path(cache_dir or settings.streammat_cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self._provision_locks = {}
+        self._provision_locks: dict[str, asyncio.Lock] = {}
 
     async def provision_matrix(
-        self, uri: str, matrix_name: str, progress_callback: Callable[[str], Coroutine] = None
+        self,
+        uri: str,
+        matrix_name: str,
+        progress_callback: Callable[[str], Coroutine] | None = None,
     ) -> str:
         """
         Ensures a matrix is available in TileDB format, converting it if necessary.
@@ -81,24 +57,28 @@ class DataManager:
         async with lock:
             cached_uri = self._get_cached_tiledb_uri(uri)
             if self._is_tiledb_array(cached_uri):
-                logger.info(f"Found already cached TileDB array for URI '{uri}' at '{cached_uri}'.")
+                logger.info(
+                    f"Found already cached TileDB array for URI '{uri}' at '{cached_uri}'."
+                )
                 if progress_callback:
                     await progress_callback("complete")
                 return cached_uri
 
             logger.info(f"Provisioning matrix from source URI: {uri}")
-            source_path, is_temporary = await self._fetch_source_file(uri, progress_callback)
+            source_path, is_temporary = await self._fetch_source_file(
+                uri, progress_callback
+            )
 
             try:
                 matrix_format = self._get_matrix_format(source_path)
                 target_dtype = DataType.FLOAT64
 
                 # Prepare the synchronous callback
-                sync_callback = None
+                sync_callback: Callable[[int, int], None] | None = None
                 if progress_callback:
                     loop = asyncio.get_running_loop()
 
-                    def sync_progress_callback(written, total):
+                    def sync_progress_callback(written: int, total: int) -> None:
                         percent = (written / total) * 100
                         msg = f'{{"status": "converting", "progress": {percent:.2f}}}'
                         asyncio.run_coroutine_threadsafe(progress_callback(msg), loop)
@@ -114,10 +94,12 @@ class DataManager:
                     overwrite=True,
                     progress_callback=sync_callback,
                 )
-                
+
                 await asyncio.to_thread(conversion_task)
 
-                logger.info(f"Successfully converted '{uri}' to TileDB array at '{cached_uri}'.")
+                logger.info(
+                    f"Successfully converted '{uri}' to TileDB array at '{cached_uri}'."
+                )
                 if progress_callback:
                     await progress_callback('{{"status": "complete"}}')
                 return cached_uri
@@ -144,12 +126,15 @@ class DataManager:
         if not Path(uri).exists():
             return False
         try:
-            # The object_type check is a lightweight way to see if it's a TileDB resource
-            return tiledb.object_type(uri) == "array"
+            # The object_type check is a lightweight way to see if it's a TileDB
+            # resource
+            return bool(tiledb.object_type(uri) == "array")
         except tiledb.TileDBError:
             return False
 
-    async def _fetch_source_file(self, uri: str, progress_callback: Callable[[str], Coroutine] = None) -> tuple[Path, bool]:
+    async def _fetch_source_file(
+        self, uri: str, progress_callback: Callable[[str], Coroutine] | None = None
+    ) -> tuple[Path, bool]:
         """
         Fetches the source file, downloading it if it's remote.
 
@@ -165,7 +150,9 @@ class DataManager:
             # It's a local file.
             local_path = Path(uri)
             if not local_path.exists():
-                raise StreamMatException(ErrorCode.INVALID_REQUEST, f"Local file not found: {uri}")
+                raise StreamMatException(
+                    ErrorCode.INVALID_REQUEST, f"Local file not found: {uri}"
+                )
             logger.info(f"URI is a local file: {local_path}")
             return local_path, False
 
@@ -173,20 +160,27 @@ class DataManager:
         """Checks if a URI has a scheme that suggests it's a remote URL."""
         return urlparse(uri).scheme in ["http", "https"]
 
-    async def _download_file(self, url: str, progress_callback: Callable[[str], Coroutine] = None) -> Path:
+    async def _download_file(
+        self, url: str, progress_callback: Callable[[str], Coroutine] | None = None
+    ) -> Path:
         """Downloads a file from a URL to the temporary directory."""
-        # It's good practice to check headers first to avoid downloading huge, unsupported files.
+        # It's good practice to check headers first to avoid downloading huge,
+        # unsupported files.
         async with aiohttp.ClientSession() as session:
             try:
                 async with session.head(url, allow_redirects=True) as response:
                     response.raise_for_status()
                     content_type = response.headers.get("Content-Type", "")
                     total_size = int(response.headers.get("Content-Length", 0))
-                    logger.info(f"Remote file content type: {content_type}, size: {total_size} bytes")
+                    logger.info(
+                        f"Remote file content type: {content_type}, size: {total_size} "
+                        "bytes"
+                    )
 
             except aiohttp.ClientError as e:
                 raise StreamMatException(
-                    ErrorCode.NETWORK_ERROR, f"Failed to retrieve headers from {url}: {e}"
+                    ErrorCode.NETWORK_ERROR,
+                    f"Failed to retrieve headers from {url}: {e}",
                 )
 
             # Proceed with downloading the file
@@ -198,7 +192,9 @@ class DataManager:
                     response.raise_for_status()
                     with open(temp_file_path, "wb") as f:
                         while True:
-                            chunk = await response.content.read(1024 * 1024)  # Read in 1MB chunks
+                            chunk = await response.content.read(
+                                1024 * 1024
+                            )  # Read in 1MB chunks
                             if not chunk:
                                 break
                             f.write(chunk)
@@ -230,14 +226,13 @@ class DataManager:
         else:
             raise StreamMatException(
                 ErrorCode.UNSUPPORTED_FORMAT,
-                f"Could not infer format from file extension '{suffix}'."
+                f"Could not infer format from file extension '{suffix}'.",
             )
 
-    def _cleanup_temp_file(self, path: Path):
+    def _cleanup_temp_file(self, path: Path) -> None:
         """Deletes a file from the temporary directory."""
         try:
             logger.info(f"Cleaning up temporary file: {path}")
             os.remove(path)
         except OSError as e:
             logger.warning(f"Failed to clean up temporary file {path}: {e}")
-

@@ -4,14 +4,15 @@ Defines the data models for the application using Pydantic.
 This ensures strong typing, validation, and clear data contracts, especially
 for API request and response bodies.
 """
+
 import enum
-from typing import Dict, List, Union
 
 from pydantic import BaseModel, Field
 
 
 class DataType(str, enum.Enum):
     """Enumeration for matrix data types, for consistency in metadata."""
+
     FLOAT32 = "float32"
     FLOAT64 = "float64"
     INT32 = "int32"
@@ -21,6 +22,7 @@ class DataType(str, enum.Enum):
 
 class ErrorCode(str, enum.Enum):
     """Enumeration for application-specific error codes."""
+
     MATRIX_NOT_FOUND = "MATRIX_NOT_FOUND"
     TILEDB_ERROR = "TILEDB_ERROR"
     INVALID_TILEDB_SCHEMA = "INVALID_TILEDB_SCHEMA"
@@ -33,6 +35,7 @@ class ErrorCode(str, enum.Enum):
     MISSING_DEPENDENCY = "MISSING_DEPENDENCY"
     UNSUPPORTED_FORMAT = "UNSUPPORTED_FORMAT"
     NETWORK_ERROR = "NETWORK_ERROR"
+    UNKNOWN_ERROR = "UNKNOWN_ERROR"
 
 
 class StreamMatConfig(BaseModel):
@@ -40,6 +43,7 @@ class StreamMatConfig(BaseModel):
     Data model for metadata stored within a TileDB array.
     This replaces the C++ StreamMatHeader struct.
     """
+
     rows: int = Field(..., gt=0, description="Number of rows in the matrix")
     cols: int = Field(..., gt=0, description="Number of columns in the matrix")
     nnz: int = Field(..., ge=0, description="Number of non-zero elements")
@@ -49,52 +53,72 @@ class StreamMatConfig(BaseModel):
 
 class MatrixInfo(BaseModel):
     """Data model describing a single loaded matrix for status responses."""
+
     uri: str
     config: StreamMatConfig
-    operations: Dict[str, 'OperationInfo']
+    operations: dict[str, "OperationInfo"]
 
 
 class OperationInfo(BaseModel):
     """Describes the expected shapes for a matrix operation."""
-    input_shape: List[int]
-    output_shape: List[int]
+
+    input_shape: list[int]
+    output_shape: list[int]
 
 
 class ServerStatus(BaseModel):
     """Data model for the GET /status API endpoint response."""
+
     server_status: str
-    loaded_matrices: Dict[str, MatrixInfo]
+    loaded_matrices: dict[str, MatrixInfo]
 
 
 class SparseVector(BaseModel):
     """Represents a sparse vector using indices and values."""
-    indices: List[int]
-    values: List[float]
+
+    indices: list[int]
+    values: list[float]
 
 
 class VectorRequest(BaseModel):
     """Data model for API requests requiring a vector (e.g., matvec)."""
-    vector: Union[List[float], SparseVector]
+
+    vector: list[float] | SparseVector
+
+
+class VectorResponse(BaseModel):
+    """Data model for API responses returning a vector."""
+
+    result: list[float]
 
 
 class LoadMatrixRequest(BaseModel):
     """Data model for the PUT /matrix/{matrix_name} API request."""
-    uri: str = Field(..., description="The URI of the TileDB array to load (e.g., path or tiledb://namespace/array)")
+
+    uri: str = Field(
+        ...,
+        description="The URI of the TileDB array to load (e.g., path or tiledb://namespace/array)",
+    )
 
 
 class MatMulRequest(BaseModel):
     """Data model for the POST /matmul/{matrix_a_name}/{matrix_b_name} API request."""
-    output_uri: str = Field(..., description="The URI for the output TileDB array to be created.")
+
+    output_uri: str = Field(
+        ..., description="The URI for the output TileDB array to be created."
+    )
 
 
 class ErrorDetail(BaseModel):
     """Detailed error model for API error responses."""
+
     code: ErrorCode
     message: str
 
 
 class ErrorResponse(BaseModel):
     """Top-level model for API error responses."""
+
     error: ErrorDetail
 
 

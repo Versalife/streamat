@@ -1,10 +1,11 @@
-import asyncio
 import http.server
-import socketserver
-import threading
-from pathlib import Path
 import shutil
+import socketserver
 import tempfile
+import threading
+from collections.abc import Generator
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -21,10 +22,9 @@ MM_CONTENT = """%%MatrixMarket matrix coordinate real general
 
 
 @pytest.fixture(scope="module")
-def http_server():
+def http_server() -> Generator[str, None, None]:
     """Fixture to run a simple HTTP server in a background thread."""
     PORT = 8080
-    handler = http.server.SimpleHTTPRequestHandler
     httpd = None
 
     # Create a temporary file to serve
@@ -33,7 +33,7 @@ def http_server():
     (temp_dir / "test.mtx").write_text(MM_CONTENT)
 
     class MyHttpRequestHandler(http.server.SimpleHTTPRequestHandler):
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, directory=str(temp_dir), **kwargs)
 
     # Try to start the server, handling "address already in use"
@@ -61,14 +61,16 @@ def http_server():
 
 
 @pytest.mark.asyncio
-async def test_load_matrix_from_url(http_server):
+async def test_load_matrix_from_url(http_server: str) -> None:
     """Tests loading a matrix from a URL with on-the-fly conversion."""
     matrix_name = "remote_matrix"
     request_body = {"uri": http_server}
 
     with TestClient(app) as client:
         # 1. Load the matrix from the URL, consuming the stream
-        with client.stream("PUT", f"/api/v1/matrix/{matrix_name}", json=request_body) as response:
+        with client.stream(
+            "PUT", f"/api/v1/matrix/{matrix_name}", json=request_body
+        ) as response:
             assert response.status_code == 200
             for line in response.iter_lines():
                 if "loading_complete" in line:
@@ -84,11 +86,15 @@ async def test_load_matrix_from_url(http_server):
 
         # 3. Perform a matvec operation to confirm it works
         matvec_request = {"vector": [1.0, 2.0]}
-        matvec_response = client.post(f"/api/v1/matvec/{matrix_name}", json=matvec_request)
+        matvec_response = client.post(
+            f"/api/v1/matvec/{matrix_name}", json=matvec_request
+        )
         assert matvec_response.status_code == 200
         np.testing.assert_allclose(matvec_response.json()["result"], [1.0, 4.0])
 
         # 4. Check that the temporary downloaded file has been cleaned up
         temp_dir = Path(tempfile.gettempdir())
         downloaded_files = list(temp_dir.glob("test.mtx*"))
-        assert not downloaded_files, f"Temporary file was not cleaned up: {downloaded_files}"
+        assert not downloaded_files, (
+            f"Temporary file was not cleaned up: {downloaded_files}"
+        )

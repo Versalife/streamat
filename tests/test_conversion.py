@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+from collections.abc import Generator
 from pathlib import Path
 
 import numpy as np
@@ -20,8 +21,9 @@ MM_CONTENT = """%%MatrixMarket matrix coordinate real general
 1 4 5.5
 """
 
+
 @pytest.fixture
-def setup_test_files():
+def setup_test_files() -> Generator[tuple[Path, str], None, None]:
     """Create a dummy matrix market file for testing."""
     mm_filepath = Path("test_matrix.mtx")
     mm_filepath.write_text(MM_CONTENT)
@@ -35,7 +37,8 @@ def setup_test_files():
     if os.path.exists(output_uri):
         shutil.rmtree(output_uri)
 
-def test_conversion_cli_success(setup_test_files):
+
+def test_conversion_cli_success(setup_test_files: tuple[Path, str]) -> None:
     """Test that the streammat-convert CLI runs successfully."""
     mm_filepath, output_uri = setup_test_files
 
@@ -43,8 +46,9 @@ def test_conversion_cli_success(setup_test_files):
         "streammat-convert",
         str(mm_filepath),
         output_uri,
-        "--dtype", "float32",
-        "--overwrite"
+        "--dtype",
+        "float32",
+        "--overwrite",
     ]
 
     result = subprocess.run(cli_command, capture_output=True, text=True)
@@ -53,7 +57,7 @@ def test_conversion_cli_success(setup_test_files):
     assert Path(output_uri).exists()
 
     # Verify the metadata of the created array
-    with tiledb.open(output_uri, 'r') as A:
+    with tiledb.open(output_uri, "r") as A:
         meta = {k: v for k, v in A.meta.items()}
         config = StreamMatConfig.model_validate(meta)
         assert config.rows == 4
@@ -62,7 +66,7 @@ def test_conversion_cli_success(setup_test_files):
         assert config.dtype == DataType.FLOAT32
 
     # Verify the contents of the created array
-    with tiledb.open(output_uri, 'r') as A:
+    with tiledb.open(output_uri, "r") as A:
         data = A[:]
         rows = data[DIM_ROW_NAME]
         cols = data[DIM_COL_NAME]
@@ -80,7 +84,8 @@ def test_conversion_cli_success(setup_test_files):
         np.testing.assert_array_equal(cols, expected_cols)
         np.testing.assert_allclose(vals, expected_vals, rtol=1e-5)
 
-def test_conversion_cli_no_overwrite(setup_test_files):
+
+def test_conversion_cli_no_overwrite(setup_test_files: tuple[Path, str]) -> None:
     """Test that the CLI fails if the output exists and --overwrite is not provided."""
     mm_filepath, output_uri = setup_test_files
     os.makedirs(output_uri, exist_ok=True)

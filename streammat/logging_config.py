@@ -1,12 +1,13 @@
 """
 Centralized configuration for the Loguru logger.
 """
+
 import sys
 
 from loguru import logger
 
 
-def setup_logging():
+def setup_logging() -> None:
     """
     Configures the global loguru logger for the application.
 
@@ -23,6 +24,6 @@ def setup_logging():
             "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
             "<level>{message}</level>"
         ),
-        colorize=True
+        colorize=True,
     )
     logger.info("Logger configured successfully.")
